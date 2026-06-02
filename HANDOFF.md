@@ -16,9 +16,11 @@
 | Screen | 1.14" LCD, **135 × 240 portrait**, rotation 0 |
 | Button A | GPIO 11 (main, front-center) |
 | Button B | GPIO 12 (side) |
-| IR LED | GPIO 46 (on top edge — aim that, not the screen) |
+| IR LED | GPIO 46 (present in hardware, unused — see History) |
 | Speaker | Built-in (PDM/I2S, small ~5mm element) |
 | IMU | MPU6886-like via `M5.Imu` (accel only used so far) |
+
+**Future target**: user has an **M5Stopwatch / Watch-S3** on order. When it arrives we extend or port — same M5Unified framework, expect different pins and likely a touch screen. Decisions to make at that point: shared codebase with `#ifdef BOARD_*`, or fork. Keep modes hardware-agnostic (they only depend on `M5Canvas`, buttons, speaker) so port cost stays low.
 
 **Original firmware** was backed up by Codex on 2026-05-23 to:
 ```
@@ -124,8 +126,10 @@ There are only 2 buttons, so this 4-event combo is the entire input vocabulary. 
 
 Don't queue tones on channels 6 or 7.
 
-### Volume
-`g_volume = 220 / 255` (85%). Speaker is tiny; keep it loud. User confirmed brown noise is now audible at this setting.
+### Volume — two-layer gain, **don't trip over this**
+M5Unified's `Speaker_Class` has **two cascaded gain stages**: `master_volume` and per-`channel_volume`. Effective output = `master × channel / 255`. The per-channel default is mid-range and silently halves output. We pin all 8 channels to 255 in `Audio::begin()` so `setVolume(master)` is the only effective knob.
+
+Default master is `g_volume = 210` (UTIL/VOLUME preset slot 3 of 5). User-adjustable via UTIL/VOLUME at runtime; defaults restored from compile-time constant on reboot (no persistence yet — see Wi-Fi/BT section for future NVS-backed config).
 
 ### Noise generation
 - `playRaw` with int16 PCM, 16000 Hz, double-buffered (two `NOISE_CHUNK=512` buffers alternate to fill the 2-slot queue per channel — no inter-chunk silence)
@@ -139,36 +143,31 @@ Don't queue tones on channels 6 or 7.
 ## 5. Feature status (current as of v0.1)
 
 ### UTILITY group
-- **BRIGHT**: 5-step backlight cycle (A short) / max jump (A long)
-- **TV-B-GONE**: 34 power codes (China-focused + global) — sweeps in ~10 s
-  - 14 Chinese-brand entries (Xiaomi/Hisense/TCL/Skyworth/Changhong/Konka/LeTV/Haier/Huawei)
-  - 15 international (Samsung/Sony×3/LG×2/Panasonic/Philips RC5+RC6/Sharp/Toshiba×2/JVC×2)
-  - 5 NEC-address fallbacks
-  - Codes marked `*` in the brand label are educated guesses (no Flipper-IRDB entry for that brand); the rest are real captures from `UberGuidoZ/Flipper-IRDB`
-  - **TCL newer (C/X series) and FFalcon use RCA protocol** — not supported by IRremote.hpp; need raw timing arrays if user reports those don't work
+- **BRIGHT**: 5-step backlight (20/60/120/180/240 of 255); A short cycles, A long jumps to max
+- **VOLUME**: 5-step global speaker master volume (40/100/160/210/255); A short cycles with a test beep so the user can gauge loudness, A long jumps to max. Calls `Audio::setVolume()` → `M5.Speaker.setVolume(master)`. Channel-level per-stream gains are pinned to 255 in `Audio::begin()`.
 
 ### TIMER group
 - **STOPWATCH**: count-up MM:SS.cs, A short start/pause, A long reset
-- **COUNTDOWN**: 30s / 1m / 2m presets shown as pills, A long cycles; beeps last 3s, triple beep on zero
-- **POMODORO**: 25+5 or 50+10 cycle; auto-toggles focus/break with distinctive chimes
+- **COUNTDOWN**: 30s / 1m / 2m presets shown as inline pills (current highlighted), A long cycles; beeps last 3s, triple beep on zero; **after expiry, A short = re-arm to same preset and restart**
+- **POMODORO**: 25+5 or 50+10 cycle; auto-toggles focus/break with distinctive chimes; **after expiry, A short = restart from new focus block**
 
 ### CALM group
 - **BREATH**: 3 patterns (4-7-8 / box / **physiological sigh** — Huberman 1.5s+0.5s+6s); audio glide cues for eyes-closed use; expanding circle viz
 - **MEDITATE**: 5/10/15/20 min silent timer; opening gong, midpoint chime, double end-gong; lotus-dot ring animates with rotation
 - **NOISE**: brown / pink / white; A short play/stop, A long cycles color; wave-bar viz when playing
-- **NSDR**: 10-min guided session, 12 Tingting TTS clips, scheduled at fixed offsets:
+- **NSDR**: ~5-min guided session, 11 Tingting TTS clips:
   ```
-  0s INTRO, 30s BREATHE, 60s FEET, 120s LEGS, 180s BELLY,
-  240s CHEST, 300s ARMS, 360s NECK, 420s FACE, 480s WHOLE,
-  540s RETURN, 580s WAKE, 596s CHIME, 600s DONE
+   0s INTRO     15s BREATH    35s FEET      65s LEGS      95s BELLY
+  130s CHEST   160s ARMS     190s FACE    225s WHOLE    255s RETURN
+  275s WAKE    285s CHIME    290s DONE
   ```
-  Voice clips embedded as 8 kHz mono 16-bit WAV in `nsdr_audio.h`. M5.Speaker.playWav parses the WAV header automatically.
+  Voice clips embedded as 8 kHz mono 16-bit WAV in `nsdr_audio.h`. M5.Speaker.playWav parses the WAV header automatically. Voice channel = 6, kept separate from noise (7) and tones (auto).
 
 ### Pending / open
-- IMU is initialized but not used. Potential: rep counter (push-up / squat / jump rope via accel peaks), posture detection, golf swing tempo
+- IMU is initialized but not used. Potential: rep counter (push-up / squat / jump rope via accel peaks), posture detection, golf swing tempo metronome
 - Wi-Fi / BT both unused — see Section 9
-- TV-B-Gone RCA support for newer TCL/FFalcon
-- Custom NSDR durations (5/15/20 min variants) and English voice option
+- Custom NSDR durations (3/7/10 min variants) and English voice option
+- Port to upcoming **M5Stopwatch / Watch-S3** when hardware arrives
 
 ---
 
@@ -191,9 +190,11 @@ When changing the script text:
 - `Meijia` (Taiwan Mandarin, female)
 - `Lili` (HK Mandarin)
 
-**Format gotcha**: xxd default emits `unsigned char` without `const`, which puts the data in DRAM and overflows it. Generator post-processes with `sed` to convert to `static const uint8_t`, which lands in flash. Don't break this.
+**Format gotchas — both critical, don't regress:**
+1. `xxd` default emits `unsigned char` without `const`, which puts the data in DRAM and overflows it. The generator post-processes with `sed` to convert to `static const uint8_t`, which lands in flash.
+2. macOS `say` output is quiet (~-15 dBFS peaks). Pipeline runs each clip through `ffmpeg -af "loudnorm=I=-9:LRA=4:tp=-0.3,acompressor=ratio=4:attack=3:release=60,volume=2dB,alimiter=limit=0.97"` to maximize audibility on the tiny built-in speaker. `-9 LUFS` is louder than broadcast standard (-23) and even louder than podcast (-16 to -14); the limiter prevents clipping. If you change clips and they sound quiet again, this filter chain probably got removed.
 
-**Current flash budget**: 35% used (1.17 MB / 3.34 MB partition). Audio data is ~800 KB. Plenty of headroom for more clips or English version.
+**Current flash budget**: 30% used (1.0 MB / 3.34 MB partition). Audio data ~700 KB after the schedule trim from 10 → 5 min. Plenty of headroom for English version, additional voice options, or more clips.
 
 ---
 
@@ -292,8 +293,14 @@ User has not requested these. Document them here for future scoping.
 | 2026-05-24 | IR → TV-B-Gone state machine, 29-code curated list |
 | 2026-05-24 | Expanded TV-B-Gone to 34 codes, China-focused, sourced from Flipper-IRDB |
 | 2026-05-24 | Added MEDITATE sub-mode (5/10/15/20 min) + NSDR 10-min Mandarin guided session with 12 Tingting clips |
+| 2026-06-02 | **TV-B-Gone removed entirely**; IRremote dependency dropped |
+| 2026-06-02 | UTIL replaced TV-B-Gone with **VOLUME** sub-mode (5-step pills, A-short cycles with test beep) |
+| 2026-06-02 | NSDR compressed to **~5 min** (11 clips, NECK merged into FACE) |
+| 2026-06-02 | NSDR voice loudness fixed at two layers: `setAllChannelVolume(255)` + ffmpeg loudnorm -9 LUFS |
+| 2026-06-02 | Countdown/Pomodoro **restart-on-A** after expiry — single-button cycle end-to-end |
+| 2026-06-02 | Pushed to `github.com/yvain57-afk/mry-pocket` (public) |
 
-Git: not currently tracked. Recommend `git init` + commit before further changes.
+Git: `origin` = `https://github.com/yvain57-afk/mry-pocket.git`, branch `main`. Push after each meaningful change.
 
 ---
 
@@ -301,13 +308,13 @@ Git: not currently tracked. Recommend `git init` + commit before further changes
 
 ```
 B short     → next group (UTIL → TIMER → CALM)
-B long 0.5s → next sub-mode
-A short     → primary action
-A long 0.5s → secondary action (preset / abort)
+B long 0.5s → next sub-mode within current group
+A short     → primary action  (start / stop / cycle step)
+A long 0.5s → secondary action (preset / reset / jump-to-max)
 
-CALM sub-modes: BREATH → MEDITATE → NOISE → NSDR
+UTIL sub-modes:  BRIGHT → VOLUME
 TIMER sub-modes: STOPWATCH → COUNTDOWN → POMODORO
-UTIL sub-modes: BRIGHT → TV-B-GONE
+CALM sub-modes:  BREATH → MEDITATE → NOISE → NSDR
 
 Flash:  esptool ... --before default-reset write-flash 0x10000 firmware.bin
 Recovery: hold B + power-cycle for download mode
