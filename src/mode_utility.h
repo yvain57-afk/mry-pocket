@@ -13,14 +13,12 @@ public:
     void renderPanel(M5Canvas& c, int x, int y, int w, int h) override;
 
 private:
-    enum Sub : uint8_t { SUB_BRIGHT = 0, SUB_TVBGONE = 1, SUB_COUNT };
+    enum Sub : uint8_t { SUB_BRIGHT = 0, SUB_VOLUME = 1, SUB_COUNT };
     Sub sub_ = SUB_BRIGHT;
-    uint8_t bright_step_ = 1;  // 0..4
-    static constexpr uint8_t BRIGHT_LEVELS[5] = {20, 60, 120, 180, 240};
 
-    // ── TV-B-Gone state machine ──
-    bool     tvbg_running_ = false;
-    uint16_t tvbg_idx_     = 0;
-    uint32_t tvbg_last_ms_ = 0;
-    uint16_t tvbg_total_   = 0;   // set in enter() from TV_CODES count
+    uint8_t bright_step_ = 1;   // 0..4
+    static constexpr uint8_t BRIGHT_LEVELS[5] = { 20, 60, 120, 180, 240 };
+
+    uint8_t volume_step_ = 3;   // 0..4
+    static constexpr uint8_t VOLUME_LEVELS[5] = { 40, 100, 160, 210, 255 };
 };

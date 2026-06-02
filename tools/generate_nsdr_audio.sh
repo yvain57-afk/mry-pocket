@@ -22,15 +22,14 @@ OUT_HEADER="src/nsdr_audio.h"
 CLIPS=(
     "intro|找一个舒服的姿势，闭上眼睛"
     "breathe|深吸一口气，慢慢呼出来"
-    "feet|把注意力放到双脚，感受它们的重量"
-    "legs|现在是小腿和大腿，让它们完全放松"
-    "belly|感受腹部，随呼吸轻轻起伏"
-    "chest|胸口和肩膀，让紧绷融化"
-    "arms|手臂从指尖到肩膀，彻底松开"
-    "neck|脖子、下巴，让牙齿微微分开"
-    "face|整张脸放松，眉心舒展"
-    "whole|现在感受整个身体的存在"
-    "return|开始注意周围的声音，活动手指和脚趾"
+    "feet|注意力放到双脚，感受重量"
+    "legs|小腿、大腿，彻底放松"
+    "belly|腹部跟着呼吸，轻轻起伏"
+    "chest|胸口、肩膀，松下来"
+    "arms|手臂从指尖到肩膀，松开"
+    "face|脖子、脸、整个头部放松"
+    "whole|感受整个身体的存在"
+    "return|开始注意周围的声音，活动手指脚趾"
     "end|深吸一口气，慢慢睁开眼睛"
 )
 
@@ -48,11 +47,21 @@ for entry in "${CLIPS[@]}"; do
     CLIP_IDS+=("$id")
 
     aiff="$OUT_DIR/$id.aiff"
+    raw_wav="$OUT_DIR/${id}_raw.wav"
     wav="$OUT_DIR/$id.wav"
 
     echo "  [$id] $text"
-    say -v "$VOICE" -o "$aiff" "$text"
-    afconvert -f WAVE -d LEI16@8000 -c 1 "$aiff" "$wav" 2>/dev/null
+    say -v "$VOICE" -r 175 -o "$aiff" "$text"
+    afconvert -f WAVE -d LEI16@8000 -c 1 "$aiff" "$raw_wav" 2>/dev/null
+    # macOS `say` outputs at ~-12 to -18 dBFS — too quiet for the StickS3
+    # speaker. Loudnorm bumps to broadcast loudness (-12 LUFS) with peak at
+    # -0.5 dBFS, plus dynamic compression so quiet phonemes are still audible.
+    # Aggressive: -9 LUFS (about 3 dB above podcast standard) plus heavy
+    # compression so every syllable hits hard on the tiny StickS3 speaker.
+    # Final stage: a hard volume bump and limiter to prevent clipping.
+    ffmpeg -y -loglevel error -i "$raw_wav" \
+        -af "loudnorm=I=-9:LRA=4:tp=-0.3,acompressor=ratio=4:attack=3:release=60,volume=2dB,alimiter=limit=0.97" \
+        -ar 8000 -ac 1 -sample_fmt s16 "$wav"
 
     # Emit as C array. Default xxd output uses `unsigned char` without const,
     # which lands in DRAM. Patch on the fly to const + flash-resident.

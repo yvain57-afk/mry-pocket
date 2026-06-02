@@ -17,20 +17,21 @@ struct Event {
     const char* phase;
 };
 
+// Compressed ~5-min schedule (290 s). Each clip ~3 s; remaining time
+// between events is silent dwell for the listener to scan that body part.
 static const Event SCHEDULE[] = {
-    {   0, NSDR_INTRO,   "INTRO"   },
-    {  30, NSDR_BREATHE, "BREATH"  },
-    {  60, NSDR_FEET,    "FEET"    },
-    { 120, NSDR_LEGS,    "LEGS"    },
-    { 180, NSDR_BELLY,   "BELLY"   },
-    { 240, NSDR_CHEST,   "CHEST"   },
-    { 300, NSDR_ARMS,    "ARMS"    },
-    { 360, NSDR_NECK,    "NECK"    },
-    { 420, NSDR_FACE,    "FACE"    },
-    { 480, NSDR_WHOLE,   "WHOLE"   },
-    { 540, NSDR_RETURN,  "RETURN"  },
-    { 580, NSDR_END,     "WAKE"    },
-    { 596, -1,           "CHIME"   },   // end gong
+    {   0, NSDR_INTRO,   "INTRO"   },   // settle
+    {  15, NSDR_BREATHE, "BREATH"  },   // open with breath cue
+    {  35, NSDR_FEET,    "FEET"    },
+    {  65, NSDR_LEGS,    "LEGS"    },
+    {  95, NSDR_BELLY,   "BELLY"   },
+    { 130, NSDR_CHEST,   "CHEST"   },
+    { 160, NSDR_ARMS,    "ARMS"    },
+    { 190, NSDR_FACE,    "FACE"    },   // neck+face merged
+    { 225, NSDR_WHOLE,   "WHOLE"   },
+    { 255, NSDR_RETURN,  "RETURN"  },
+    { 275, NSDR_END,     "WAKE"    },
+    { 285, -1,           "CHIME"   },   // end gong
 };
 static constexpr uint8_t SCHEDULE_COUNT = sizeof(SCHEDULE) / sizeof(SCHEDULE[0]);
 

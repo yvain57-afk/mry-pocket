@@ -13,7 +13,7 @@
 
 namespace NSDR {
 
-static constexpr uint32_t SESSION_DURATION_S = 600;  // 10 min
+static constexpr uint32_t SESSION_DURATION_S = 290;  // ~5 min
 
 void  start();
 void  stop();

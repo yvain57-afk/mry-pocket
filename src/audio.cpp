@@ -32,6 +32,10 @@ void begin() {
     M5.Speaker.config(cfg);
     M5.Speaker.begin();
     M5.Speaker.setVolume(g_volume);
+    // M5Unified speaker has TWO gain stages: master_volume × channel_volume.
+    // The per-channel default is conservative and was muting WAV playback
+    // (NSDR voice). Pin all 8 channels to max so master_volume is the only knob.
+    M5.Speaker.setAllChannelVolume(255);
 }
 
 void setVolume(uint8_t v) { g_volume = v; M5.Speaker.setVolume(v); }

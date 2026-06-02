@@ -93,14 +93,25 @@ void TimerMode::onEvent(BtnEvent e) {
             }
             Audio::beep(1800, 40);
         } else {
-            // CD / POM: start/pause
+            // CD / POM: start / pause / restart-after-completion
             if (running_) {
                 running_ = false;
+                Audio::beep(1800, 40);
             } else {
+                // If we're at zero (timer ran out, sitting idle), re-arm
+                // to the current preset's full duration so A short re-starts
+                // the same countdown instead of starting from 0.
+                if (sub_ == SUB_COUNTDOWN && cd_remaining_ms_ <= 0) {
+                    cd_remaining_ms_ = (int32_t)CD_OPTIONS_S[cd_idx_] * 1000;
+                    cd_last_beep_sec_ = 99;
+                } else if (sub_ == SUB_POMODORO && pom_remaining_ms_ <= 0) {
+                    pom_in_break_ = false;
+                    pom_remaining_ms_ = (int32_t)POM_OPTIONS[pom_idx_][0] * 60 * 1000;
+                }
                 start_ms_ = millis();
                 running_ = true;
+                Audio::beep(1800, 40);
             }
-            Audio::beep(1800, 40);
         }
     } else if (e == EV_A_LONG) {
         if (running_) {
@@ -218,14 +229,16 @@ void TimerMode::renderPanel(M5Canvas& c, int x, int y, int w, int h) {
     c.setTextSize(1);
     c.setTextColor(UI::COL_DIM, UI::COL_BG);
     c.setTextDatum(top_left);
-    // Context-aware footer hint per sub-mode — tells user how to switch preset
+    // Context-aware footer hint per sub-mode
     const char* hint;
     if (sub_ == SUB_COUNTDOWN) {
-        hint = running_ ? "A:pause  holdA:cycle 30s/1m/2m"
-                        : "A:start  holdA:cycle 30s/1m/2m";
+        if (running_)                  hint = "A:pause  holdA:cycle 30s/1m/2m";
+        else if (cd_remaining_ms_ <= 0) hint = "A:restart  holdA:change preset";
+        else                            hint = "A:start  holdA:cycle 30s/1m/2m";
     } else if (sub_ == SUB_POMODORO) {
-        hint = running_ ? "A:pause  holdA:cycle preset"
-                        : "A:start  holdA:cycle preset";
+        if (running_)                    hint = "A:pause  holdA:cycle preset";
+        else if (pom_remaining_ms_ <= 0) hint = "A:restart  holdA:cycle preset";
+        else                             hint = "A:start  holdA:cycle preset";
     } else {
         hint = running_ ? "A:pause  holdA:reset"
                         : "A:start  holdA:reset";
