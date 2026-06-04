@@ -3,7 +3,7 @@
 namespace UI {
 
 static uint32_t s_boot_ms = 0;
-static const char* GROUP_LABELS[GRP_COUNT] = { "UTIL", "TIME", "CALM" };
+static const char* GROUP_LABELS[GRP_COUNT] = { "UTIL", "TIME", "CALM", "MON" };
 
 // ── Off-screen canvas (16-bit, in PSRAM) — full-screen back buffer ──
 static M5Canvas s_canvas(&M5.Display);

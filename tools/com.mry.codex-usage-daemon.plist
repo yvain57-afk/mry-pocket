@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Mr.Y Pocket — Codex usage daemon LaunchAgent
+      Install:  bash tools/install_codex_daemon.sh
+      Logs:     ~/Library/Logs/codex-usage-daemon.{out,err}
+    -->
+    <key>Label</key>
+    <string>com.mry.codex-usage-daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>__SCRIPT_PATH__</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+        <string>--port</string>
+        <string>8888</string>
+    </array>
+
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/codex-usage-daemon.out</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/codex-usage-daemon.err</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

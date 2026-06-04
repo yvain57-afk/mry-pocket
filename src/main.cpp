@@ -12,11 +12,13 @@
 #include "mode_utility.h"
 #include "mode_timer.h"
 #include "mode_calm.h"
+#include "mode_monitor.h"
 
 // ────── Mode singletons ──────
 static UtilityMode utility_;
 static TimerMode   timer_;
 static CalmMode    calm_;
+static MonitorMode monitor_;
 
 static Group s_group = GRP_TIMER;   // boot into TIMER (most-used)
 
@@ -25,6 +27,7 @@ Mode* getMode(Group g) {
         case GRP_UTILITY: return &utility_;
         case GRP_TIMER:   return &timer_;
         case GRP_CALM:    return &calm_;
+        case GRP_MONITOR: return &monitor_;
         default:          return &timer_;
     }
 }

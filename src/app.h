@@ -14,9 +14,10 @@ static constexpr uint16_t SCR_H = 240;
 
 // ───────── Mode groups ─────────
 enum Group : uint8_t {
-    GRP_UTILITY = 0,   // brightness + IR
+    GRP_UTILITY = 0,   // brightness + volume
     GRP_TIMER   = 1,   // stopwatch + countdown + pomodoro
-    GRP_CALM    = 2,   // breathing + noise
+    GRP_CALM    = 2,   // breathing + meditate + noise + NSDR
+    GRP_MONITOR = 3,   // Codex usage from local Macs
     GRP_COUNT
 };
 
