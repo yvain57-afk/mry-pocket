@@ -22,9 +22,12 @@ struct Endpoint {
     const char* path;
 };
 
+// Local IPs are DHCP-assigned but stable enough on the user's router.
+// If they ever rotate, either set DHCP reservation in the router or swap
+// to `.local` mDNS hostnames here.
 static const Endpoint ENDPOINTS[] = {
-    { "MAC MINI", "yvain-Macmini-2.local", 8888, "/codex/usage" },
-    { "AIR",      "yvain-MBA.local",       8888, "/codex/usage" },  // adjust hostname after Air install
+    { "MAC MINI", "192.168.2.236", 8888, "/codex/usage" },
+    { "AIR",      "192.168.2.151", 8888, "/codex/usage" },
 };
 static constexpr uint8_t ENDPOINT_COUNT = sizeof(ENDPOINTS) / sizeof(ENDPOINTS[0]);
 
