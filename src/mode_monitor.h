@@ -25,7 +25,9 @@ private:
         float    primary_pct     = 0.0f;
         float    secondary_pct   = 0.0f;
         uint32_t resets_at_epoch = 0;
-        uint32_t last_fetch_ms   = 0;     // millis() of last attempt
+        uint32_t stale_seconds   = 0;     // age of underlying token_count event
+        bool     adjusted_rollover = false; // daemon synthesized 0% after reset
+        uint32_t last_fetch_ms   = 0;
         bool     last_fetch_ok   = false;
         char     err_msg[32]     = "";
     };

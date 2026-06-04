@@ -107,9 +107,11 @@ void MonitorMode::doFetch(uint8_t idx, uint32_t now_ms) {
 
     // Parse only the fields we need to keep RAM low
     StaticJsonDocument<512> filter;
-    filter["data"]["primary"]["used_percent"]   = true;
-    filter["data"]["primary"]["resets_at"]      = true;
-    filter["data"]["secondary"]["used_percent"] = true;
+    filter["stale_seconds"]                              = true;
+    filter["data"]["primary"]["used_percent"]            = true;
+    filter["data"]["primary"]["resets_at"]               = true;
+    filter["data"]["primary"]["adjusted_for_rollover"]   = true;
+    filter["data"]["secondary"]["used_percent"]          = true;
 
     DynamicJsonDocument doc(1024);
     DeserializationError err = deserializeJson(
@@ -127,12 +129,14 @@ void MonitorMode::doFetch(uint8_t idx, uint32_t now_ms) {
         return;
     }
 
-    p.primary_pct     = data["primary"]["used_percent"]   | 0.0f;
-    p.secondary_pct   = data["secondary"]["used_percent"] | 0.0f;
-    p.resets_at_epoch = (uint32_t)(data["primary"]["resets_at"] | 0UL);
-    p.have_data       = true;
-    p.last_fetch_ok   = true;
-    p.err_msg[0]      = 0;
+    p.primary_pct        = data["primary"]["used_percent"]   | 0.0f;
+    p.secondary_pct      = data["secondary"]["used_percent"] | 0.0f;
+    p.resets_at_epoch    = (uint32_t)(data["primary"]["resets_at"] | 0UL);
+    p.adjusted_rollover  = data["primary"]["adjusted_for_rollover"] | false;
+    p.stale_seconds      = (uint32_t)(doc["stale_seconds"] | 0UL);
+    p.have_data          = true;
+    p.last_fetch_ok      = true;
+    p.err_msg[0]         = 0;
 }
 
 // ── Ring progress drawing helper ──
@@ -257,11 +261,25 @@ void MonitorMode::renderPanel(M5Canvas& c, int x, int y, int w, int h) {
     int sbFill = (int)(p.secondary_pct * (sbW - 2) / 100.0f);
     c.fillRect(x + 17, sbY + 1, sbFill, 4, UI::COL_COOL);
 
-    // age of data
-    uint32_t age_s = (millis() - p.last_fetch_ms) / 1000;
-    char age_buf[20];
-    snprintf(age_buf, sizeof(age_buf), "%lus ago  A:refresh", (unsigned long)age_s);
-    c.setTextColor(UI::COL_DIM, UI::COL_BG);
+    // Status line: either "stale (no recent codex turn)" or live age
+    char status[28];
+    uint16_t status_col = UI::COL_DIM;
+    if (p.adjusted_rollover || p.stale_seconds > 1800) {
+        // Underlying token_count event is >30 min old — figure is a guess
+        uint32_t mins = p.stale_seconds / 60;
+        if (mins < 60)
+            snprintf(status, sizeof(status), "stale %lum", (unsigned long)mins);
+        else
+            snprintf(status, sizeof(status), "stale %luh", (unsigned long)(mins / 60));
+        status_col = UI::COL_ACCENT;
+    } else {
+        snprintf(status, sizeof(status), "%lus ago", (unsigned long)(p.stale_seconds));
+    }
+    c.setFont(&fonts::Font0);
+    c.setTextColor(status_col, UI::COL_BG);
     c.setTextDatum(top_right);
-    c.drawString(age_buf, x + w - 8, y + h - 12);
+    c.drawString(status, x + w - 8, y + h - 12);
+    c.setTextColor(UI::COL_DIM, UI::COL_BG);
+    c.setTextDatum(top_left);
+    c.drawString("A:refresh", x + 6, y + h - 12);
 }

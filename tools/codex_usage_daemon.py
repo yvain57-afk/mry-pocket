@@ -94,17 +94,70 @@ def fetch_latest_rate_limits() -> dict | None:
     }
 
 
+def _adjust_for_window_resets(data: dict, now_epoch: float) -> dict:
+    """
+    Codex only writes `token_count` events when a turn completes. The
+    rate_limits embedded in those events are correct AT THAT MOMENT —
+    but become stale immediately after. If the window's `resets_at`
+    has already passed by the time we read it, the real percent in
+    that window is back to 0 (no new turns since the reset).
+
+    We don't have a live API, but we *can* trust resets_at: if now is
+    past it, the window has rolled over. Set used_percent to 0 in that
+    case and update resets_at by adding window_minutes until it lands
+    in the future.
+    """
+    if not data:
+        return data
+
+    for slot in ("primary", "secondary"):
+        rl = data.get(slot)
+        if not rl:
+            continue
+        resets_at = rl.get("resets_at")
+        window_min = rl.get("window_minutes")
+        if not resets_at or not window_min:
+            continue
+        if now_epoch >= resets_at:
+            # Roll resets_at forward by window_minutes until it's in future
+            window_s = window_min * 60
+            new_resets = resets_at
+            while new_resets <= now_epoch:
+                new_resets += window_s
+            rl["resets_at"] = new_resets
+            rl["used_percent"] = 0.0
+            rl["adjusted_for_rollover"] = True
+        else:
+            rl["adjusted_for_rollover"] = False
+    return data
+
+
 def cached_payload() -> dict:
     now = time.time()
     if _cache["value"] is None or (now - _cache["fetched_at"]) > _CACHE_TTL:
-        _cache["value"] = fetch_latest_rate_limits()
+        raw = fetch_latest_rate_limits()
+        _cache["value"] = _adjust_for_window_resets(raw, now)
         _cache["fetched_at"] = now
-    payload = {
-        "device_name":  socket.gethostname(),
-        "fetched_at":   datetime.now(timezone.utc).isoformat(),
-        "data":         _cache["value"],
+
+    data = _cache["value"]
+    # Surface staleness so the client can warn user when no turns have
+    # happened recently — even after rollover, that means the figure is
+    # a guess (0%) not a measurement.
+    source_ts = data.get("source_timestamp") if data else None
+    stale_seconds = None
+    if source_ts:
+        try:
+            src_dt = datetime.fromisoformat(source_ts.replace("Z", "+00:00"))
+            stale_seconds = int(now - src_dt.timestamp())
+        except (ValueError, AttributeError):
+            pass
+
+    return {
+        "device_name":   socket.gethostname(),
+        "fetched_at":    datetime.now(timezone.utc).isoformat(),
+        "stale_seconds": stale_seconds,
+        "data":          data,
     }
-    return payload
 
 
 # ─────────────────── HTTP layer ───────────────────
