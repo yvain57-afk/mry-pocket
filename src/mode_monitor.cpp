@@ -203,13 +203,25 @@ void MonitorMode::renderPanel(M5Canvas& c, int x, int y, int w, int h) {
                                                 UI::COL_OK;
     renderRing(c, cx, cy, r, p.primary_pct, ring_col);
 
-    // Center percentage text
-    char pct_buf[8];
-    snprintf(pct_buf, sizeof(pct_buf), "%d%%", (int)(p.primary_pct + 0.5f));
+    // Center: tiny "USED" label, big number (Font7 = 7-seg, digits only),
+    // and a small "%" suffix in a regular font next to the number.
+    c.setFont(&fonts::Font2);
+    c.setTextColor(UI::COL_DIM, UI::COL_BG);
+    c.setTextDatum(middle_center);
+    c.drawString("USED", cx, cy - 22);
+
+    char num_buf[8];
+    snprintf(num_buf, sizeof(num_buf), "%d", (int)(p.primary_pct + 0.5f));
     c.setFont(&fonts::Font7);
     c.setTextColor(ring_col, UI::COL_BG);
-    c.setTextDatum(middle_center);
-    c.drawString(pct_buf, cx, cy);
+    c.setTextDatum(middle_right);
+    // Slight rightward shift so the "%" lands neatly on the right
+    c.drawString(num_buf, cx + 8, cy + 6);
+
+    c.setFont(&fonts::Font4);
+    c.setTextColor(ring_col, UI::COL_BG);
+    c.setTextDatum(middle_left);
+    c.drawString("%", cx + 10, cy + 12);
 
     // ── Reset countdown ──
     // resets_at_epoch is UTC seconds. We have no RTC, so we trust the
