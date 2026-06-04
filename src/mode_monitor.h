@@ -21,16 +21,20 @@ public:
 private:
     // Per-endpoint cached fetch result
     struct PageState {
-        bool     have_data       = false;
-        float    primary_pct     = 0.0f;
-        float    secondary_pct   = 0.0f;
-        uint32_t resets_at_epoch = 0;
-        uint32_t stale_seconds   = 0;     // age of underlying token_count event
-        bool     adjusted_rollover = false; // daemon synthesized 0% after reset
-        uint32_t last_fetch_ms   = 0;
-        bool     last_fetch_ok   = false;
-        char     err_msg[32]     = "";
+        bool     have_data         = false;
+        float    primary_pct       = 0.0f;   // last observed, may be stale
+        float    secondary_pct     = 0.0f;
+        uint32_t primary_resets    = 0;       // epoch, advanced past now by daemon
+        uint32_t secondary_resets  = 0;
+        bool     primary_rolled    = false;   // window has cycled since record
+        bool     secondary_rolled  = false;
+        uint32_t stale_seconds     = 0;       // age of underlying record
+        uint32_t last_fetch_ms     = 0;
+        bool     last_fetch_ok     = false;
+        char     err_msg[32]       = "";
     };
+
+    static constexpr uint32_t STALE_THRESHOLD_S = 30 * 60;   // 30 min
 
     uint8_t   sub_ = 0;
     PageState pages_[WiFiConfig::ENDPOINT_COUNT];
@@ -42,6 +46,4 @@ private:
 
     void startWifiIfNeeded();
     void doFetch(uint8_t idx, uint32_t now_ms);
-    void renderRing(M5Canvas& c, int cx, int cy, int r,
-                    float pct, uint16_t fg_col) const;
 };

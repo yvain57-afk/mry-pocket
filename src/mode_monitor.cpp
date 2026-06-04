@@ -4,7 +4,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <math.h>
 
 using WiFiConfig::ENDPOINTS;
 using WiFiConfig::ENDPOINT_COUNT;
@@ -15,7 +14,7 @@ void MonitorMode::enter() {
 }
 
 void MonitorMode::exit() {
-    // Keep WiFi alive — re-connecting is slow and other modes don't care.
+    // Keep WiFi alive across modes
 }
 
 const char* MonitorMode::subName() const {
@@ -25,17 +24,14 @@ const char* MonitorMode::subName() const {
 void MonitorMode::cycleSubMode() {
     sub_ = (sub_ + 1) % ENDPOINT_COUNT;
     Audio::beep(1400, 30);
-    // Force immediate refresh on the new page
     pages_[sub_].last_fetch_ms = 0;
 }
 
 void MonitorMode::onEvent(BtnEvent e) {
     if (e == EV_A_SHORT) {
-        // Force refetch now
         pages_[sub_].last_fetch_ms = 0;
         Audio::beep(1800, 30);
     } else if (e == EV_A_LONG) {
-        // also swap page on long-A (extra convenience — same as B long)
         cycleSubMode();
     }
 }
@@ -49,18 +45,16 @@ void MonitorMode::startWifiIfNeeded() {
 }
 
 void MonitorMode::tick(uint32_t now_ms) {
-    // ── WiFi state machine ──
     switch (wifi_state_) {
         case WF_BOOT:
         case WF_FAILED:
             startWifiIfNeeded();
             break;
         case WF_CONNECTING:
-            if (WiFi.status() == WL_CONNECTED) {
+            if (WiFi.status() == WL_CONNECTED)
                 wifi_state_ = WF_READY;
-            } else if (now_ms - wifi_attempt_started_ms_ > WiFiConfig::WIFI_CONNECT_TIMEOUT_MS) {
+            else if (now_ms - wifi_attempt_started_ms_ > WiFiConfig::WIFI_CONNECT_TIMEOUT_MS)
                 wifi_state_ = WF_FAILED;
-            }
             break;
         case WF_READY:
             if (WiFi.status() != WL_CONNECTED) {
@@ -71,7 +65,6 @@ void MonitorMode::tick(uint32_t now_ms) {
     }
     if (wifi_state_ != WF_READY) return;
 
-    // ── Fetch active page if it's due ──
     PageState& p = pages_[sub_];
     if (p.last_fetch_ms == 0 || (now_ms - p.last_fetch_ms) >= POLL_INTERVAL_MS) {
         doFetch(sub_, now_ms);
@@ -105,13 +98,14 @@ void MonitorMode::doFetch(uint8_t idx, uint32_t now_ms) {
     String body = http.getString();
     http.end();
 
-    // Parse only the fields we need to keep RAM low
-    StaticJsonDocument<512> filter;
+    StaticJsonDocument<640> filter;
     filter["stale_seconds"]                              = true;
     filter["data"]["primary"]["used_percent"]            = true;
     filter["data"]["primary"]["resets_at"]               = true;
-    filter["data"]["primary"]["adjusted_for_rollover"]   = true;
+    filter["data"]["primary"]["window_already_reset"]    = true;
     filter["data"]["secondary"]["used_percent"]          = true;
+    filter["data"]["secondary"]["resets_at"]             = true;
+    filter["data"]["secondary"]["window_already_reset"]  = true;
 
     DynamicJsonDocument doc(1024);
     DeserializationError err = deserializeJson(
@@ -129,57 +123,141 @@ void MonitorMode::doFetch(uint8_t idx, uint32_t now_ms) {
         return;
     }
 
-    p.primary_pct        = data["primary"]["used_percent"]   | 0.0f;
-    p.secondary_pct      = data["secondary"]["used_percent"] | 0.0f;
-    p.resets_at_epoch    = (uint32_t)(data["primary"]["resets_at"] | 0UL);
-    p.adjusted_rollover  = data["primary"]["adjusted_for_rollover"] | false;
-    p.stale_seconds      = (uint32_t)(doc["stale_seconds"] | 0UL);
-    p.have_data          = true;
-    p.last_fetch_ok      = true;
-    p.err_msg[0]         = 0;
+    p.primary_pct       = data["primary"]["used_percent"]   | 0.0f;
+    p.secondary_pct     = data["secondary"]["used_percent"] | 0.0f;
+    p.primary_resets    = (uint32_t)(data["primary"]["resets_at"]   | 0UL);
+    p.secondary_resets  = (uint32_t)(data["secondary"]["resets_at"] | 0UL);
+    p.primary_rolled    = data["primary"]["window_already_reset"]   | false;
+    p.secondary_rolled  = data["secondary"]["window_already_reset"] | false;
+    p.stale_seconds     = (uint32_t)(doc["stale_seconds"] | 0UL);
+    p.have_data         = true;
+    p.last_fetch_ok     = true;
+    p.err_msg[0]        = 0;
 }
 
-// ── Ring progress drawing helper ──
-// Draws an arc from 12 o'clock clockwise. Background ring in dim, foreground
-// fill proportional to pct (0..100).
-void MonitorMode::renderRing(M5Canvas& c, int cx, int cy, int r,
-                             float pct, uint16_t fg_col) const {
-    const int thick = 8;
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    // Background full ring
-    c.fillArc(cx, cy, r, r - thick, 0, 360, UI::COL_PANEL);
-    // Foreground filled arc — start at 270° (top), sweep clockwise
-    float sweep = pct * 360.0f / 100.0f;
-    if (sweep > 0.5f) {
-        c.fillArc(cx, cy, r, r - thick, 270, 270 + sweep, fg_col);
-    }
+// ─────────── Drawing helpers ───────────
+
+// Format a Unix epoch (UTC) as HH:MM in Asia/Shanghai (+8).
+static void formatHHMM(char* buf, size_t n, uint32_t epoch) {
+    if (epoch == 0) { snprintf(buf, n, "--:--"); return; }
+    uint32_t local = epoch + 8 * 3600;
+    uint32_t hh = (local / 3600) % 24;
+    uint32_t mm = (local / 60) % 60;
+    snprintf(buf, n, "%02lu:%02lu", (unsigned long)hh, (unsigned long)mm);
 }
 
-void MonitorMode::renderPanel(M5Canvas& c, int x, int y, int w, int h) {
-    c.fillRect(x, y, w, h, UI::COL_BG);
+// Format duration to a compact "Xm" / "Xh" / "Xd"
+static void formatAge(char* buf, size_t n, uint32_t seconds) {
+    if (seconds < 60)         snprintf(buf, n, "%lus", (unsigned long)seconds);
+    else if (seconds < 3600)  snprintf(buf, n, "%lum", (unsigned long)(seconds / 60));
+    else if (seconds < 86400) snprintf(buf, n, "%luh", (unsigned long)(seconds / 3600));
+    else                      snprintf(buf, n, "%lud", (unsigned long)(seconds / 86400));
+}
+
+// Draw one usage block: small label, full-width bar, percentage right, reset HH:MM left
+struct BlockSpec {
+    int  y0;
+    const char* label;
+    float pct;
+    bool is_stale;          // > threshold OR window has rolled over
+    bool rolled;
+    uint32_t resets_at;
+    bool is_weekly;         // weekly resets show "M/D" instead of HH:MM
+};
+
+static void drawBlock(M5Canvas& c, int x, int w, const BlockSpec& b) {
+    // Label
     c.setFont(&fonts::Font2);
     c.setTextSize(1);
     c.setTextColor(UI::COL_FG, UI::COL_BG);
     c.setTextDatum(top_left);
+    c.drawString(b.label, x + 6, b.y0);
 
-    const auto& ep = ENDPOINTS[sub_];
-    c.drawString("CODEX 5h", x + 6, y + 6);
-    c.setTextColor(UI::COL_COOL, UI::COL_BG);
+    // Bar
+    int barX = x + 6;
+    int barY = b.y0 + 20;
+    int barW = w - 12;
+    int barH = 16;
+    c.drawRoundRect(barX, barY, barW, barH, 3, UI::COL_DIM);
+
+    // Fill — always green/cyan, never red. Stale → just outline.
+    if (!b.is_stale) {
+        int fill = (int)(b.pct * (barW - 4) / 100.0f);
+        if (fill < 0) fill = 0;
+        if (fill > barW - 4) fill = barW - 4;
+        uint16_t fg = (b.pct >= 75) ? UI::COL_COOL : UI::COL_OK;
+        c.fillRoundRect(barX + 2, barY + 2, fill, barH - 4, 2, fg);
+    } else {
+        // Subtle hatched look — draw evenly-spaced dim dots to signal "unknown"
+        for (int dx = 4; dx < barW - 4; dx += 6) {
+            c.drawFastVLine(barX + dx, barY + 5, barH - 10, UI::COL_DIM);
+        }
+    }
+
+    // Percentage on the right (or "—" if stale)
     c.setTextDatum(top_right);
-    c.drawString(ep.label, x + w - 6, y + 6);
+    c.setFont(&fonts::Font4);
+    if (b.is_stale) {
+        c.setTextColor(UI::COL_DIM, UI::COL_BG);
+        c.drawString("--", x + w - 6, b.y0 - 2);
+    } else {
+        c.setTextColor(UI::COL_FG, UI::COL_BG);
+        char pct_buf[8];
+        snprintf(pct_buf, sizeof(pct_buf), "%d%%", (int)(b.pct + 0.5f));
+        c.drawString(pct_buf, x + w - 6, b.y0 - 2);
+    }
 
-    // WiFi banner if not connected
+    // Reset time
+    c.setFont(&fonts::Font0);
+    c.setTextSize(1);
+    c.setTextColor(UI::COL_DIM, UI::COL_BG);
+    c.setTextDatum(top_left);
+    char reset_buf[20];
+    if (b.is_weekly) {
+        // Mon Jun 11 — fake by month/day from epoch
+        if (b.resets_at == 0) {
+            snprintf(reset_buf, sizeof(reset_buf), "reset ?");
+        } else {
+            // Approximate calendar from epoch — good enough for "look once"
+            // (no leap-year-aware lib, fine for years 2026-2030)
+            uint32_t local_days = (b.resets_at + 8 * 3600) / 86400;
+            // Days since 1970-01-01 (Thursday)
+            int y = 1970, days = local_days;
+            while (true) {
+                int leap = ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0);
+                int yd = leap ? 366 : 365;
+                if (days < yd) break;
+                days -= yd;
+                y++;
+            }
+            int leap = ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0);
+            int dm[] = { 31, leap?29:28, 31,30,31,30,31,31,30,31,30,31 };
+            int m = 0;
+            while (days >= dm[m]) { days -= dm[m]; m++; }
+            snprintf(reset_buf, sizeof(reset_buf), "reset %d/%d", m + 1, days + 1);
+        }
+    } else {
+        char hhmm[8];
+        formatHHMM(hhmm, sizeof(hhmm), b.resets_at);
+        snprintf(reset_buf, sizeof(reset_buf), "reset %s", hhmm);
+    }
+    c.drawString(reset_buf, barX, barY + barH + 4);
+}
+
+void MonitorMode::renderPanel(M5Canvas& c, int x, int y, int w, int h) {
+    c.fillRect(x, y, w, h, UI::COL_BG);
+
+    // ── WiFi banner if not connected ──
     if (wifi_state_ != WF_READY) {
         c.setFont(&fonts::Font4);
-        c.setTextColor(UI::COL_ACCENT, UI::COL_BG);
+        c.setTextColor(UI::COL_COOL, UI::COL_BG);
         c.setTextDatum(middle_center);
         const char* msg = (wifi_state_ == WF_CONNECTING) ? "WIFI..." :
                           (wifi_state_ == WF_FAILED) ? "NO WIFI" : "BOOT";
-        c.drawString(msg, x + w/2, y + h/2);
+        c.drawString(msg, x + w/2, y + h/2 - 12);
         c.setFont(&fonts::Font0);
         c.setTextColor(UI::COL_DIM, UI::COL_BG);
-        c.drawString(WiFiConfig::SSID, x + w/2, y + h/2 + 22);
+        c.drawString(WiFiConfig::SSID, x + w/2, y + h/2 + 10);
         return;
     }
 
@@ -187,99 +265,61 @@ void MonitorMode::renderPanel(M5Canvas& c, int x, int y, int w, int h) {
 
     if (!p.have_data) {
         c.setFont(&fonts::Font4);
-        c.setTextColor(p.last_fetch_ok ? UI::COL_DIM : UI::COL_HOT, UI::COL_BG);
+        c.setTextColor(UI::COL_COOL, UI::COL_BG);
         c.setTextDatum(middle_center);
-        c.drawString(p.last_fetch_ok ? "FETCHING" : "ERROR", x + w/2, y + h/2 - 10);
+        c.drawString(p.last_fetch_ok ? "FETCHING" : "OFFLINE", x + w/2, y + h/2 - 8);
         if (!p.last_fetch_ok && p.err_msg[0]) {
             c.setFont(&fonts::Font0);
             c.setTextColor(UI::COL_DIM, UI::COL_BG);
-            c.drawString(p.err_msg, x + w/2, y + h/2 + 18);
+            c.drawString(p.err_msg, x + w/2, y + h/2 + 16);
         }
         return;
     }
 
-    // ── Big ring: primary 5h usage ──
-    int cx = x + w / 2;
-    int cy = y + 80;
-    int r  = 50;
-    uint16_t ring_col = (p.primary_pct >= 90) ? UI::COL_HOT :
-                        (p.primary_pct >= 70) ? UI::COL_ACCENT :
-                                                UI::COL_OK;
-    renderRing(c, cx, cy, r, p.primary_pct, ring_col);
+    // ── Two stacked bars: 5 HOURS / WEEK ──
+    bool primary_stale   = p.primary_rolled   || p.stale_seconds > STALE_THRESHOLD_S;
+    bool secondary_stale = p.secondary_rolled || p.stale_seconds > STALE_THRESHOLD_S;
 
-    // Center: tiny "USED" label, big number (Font7 = 7-seg, digits only),
-    // and a small "%" suffix in a regular font next to the number.
-    c.setFont(&fonts::Font2);
-    c.setTextColor(UI::COL_DIM, UI::COL_BG);
-    c.setTextDatum(middle_center);
-    c.drawString("USED", cx, cy - 22);
+    BlockSpec a{};
+    a.y0 = y + 4;
+    a.label = "5 HOURS";
+    a.pct = p.primary_pct;
+    a.is_stale = primary_stale;
+    a.rolled = p.primary_rolled;
+    a.resets_at = p.primary_resets;
+    a.is_weekly = false;
+    drawBlock(c, x, w, a);
 
-    char num_buf[8];
-    snprintf(num_buf, sizeof(num_buf), "%d", (int)(p.primary_pct + 0.5f));
-    c.setFont(&fonts::Font7);
-    c.setTextColor(ring_col, UI::COL_BG);
-    c.setTextDatum(middle_right);
-    // Slight rightward shift so the "%" lands neatly on the right
-    c.drawString(num_buf, cx + 8, cy + 6);
+    BlockSpec b{};
+    b.y0 = y + 76;
+    b.label = "THIS WEEK";
+    b.pct = p.secondary_pct;
+    b.is_stale = secondary_stale;
+    b.rolled = p.secondary_rolled;
+    b.resets_at = p.secondary_resets;
+    b.is_weekly = true;
+    drawBlock(c, x, w, b);
 
-    c.setFont(&fonts::Font4);
-    c.setTextColor(ring_col, UI::COL_BG);
-    c.setTextDatum(middle_left);
-    c.drawString("%", cx + 10, cy + 12);
-
-    // ── Reset countdown ──
-    // resets_at_epoch is UTC seconds. We have no RTC, so we trust the
-    // server-provided value relative to its `fetched_at`. Simpler:
-    // re-fetch /codex/usage already gives fresh resets_at; we just
-    // display HH:MM until reset using current epoch from response… but
-    // we didn't parse fetched_at into epoch yet. Compromise: show
-    // resets_at as wall-clock HH:MM in Asia/Shanghai (UTC+8).
-    if (p.resets_at_epoch > 0) {
-        uint32_t local = p.resets_at_epoch + 8 * 3600;
-        uint32_t hour = (local / 3600) % 24;
-        uint32_t min  = (local / 60)   % 60;
-        char buf[24];
-        snprintf(buf, sizeof(buf), "resets %02lu:%02lu",
-                 (unsigned long)hour, (unsigned long)min);
-        c.setFont(&fonts::Font2);
-        c.setTextColor(UI::COL_FG, UI::COL_BG);
-        c.setTextDatum(top_center);
-        c.drawString(buf, cx, cy + r + 14);
-    }
-
-    // ── Secondary (weekly) thin bar ──
-    int sbY = y + h - 32;
-    int sbW = w - 32;
+    // ── Footer status ──
     c.setFont(&fonts::Font0);
+    c.setTextSize(1);
     c.setTextDatum(top_left);
-    c.setTextColor(UI::COL_DIM, UI::COL_BG);
-    char sbLabel[24];
-    snprintf(sbLabel, sizeof(sbLabel), "week %d%%", (int)(p.secondary_pct + 0.5f));
-    c.drawString(sbLabel, x + 16, sbY - 10);
+    int footY = y + h - 14;
 
-    c.drawRect(x + 16, sbY, sbW, 6, UI::COL_DIM);
-    int sbFill = (int)(p.secondary_pct * (sbW - 2) / 100.0f);
-    c.fillRect(x + 17, sbY + 1, sbFill, 4, UI::COL_COOL);
-
-    // Status line: either "stale (no recent codex turn)" or live age
-    char status[28];
-    uint16_t status_col = UI::COL_DIM;
-    if (p.adjusted_rollover || p.stale_seconds > 1800) {
-        // Underlying token_count event is >30 min old — figure is a guess
-        uint32_t mins = p.stale_seconds / 60;
-        if (mins < 60)
-            snprintf(status, sizeof(status), "stale %lum", (unsigned long)mins);
-        else
-            snprintf(status, sizeof(status), "stale %luh", (unsigned long)(mins / 60));
-        status_col = UI::COL_ACCENT;
+    if (primary_stale || secondary_stale) {
+        c.setTextColor(UI::COL_DIM, UI::COL_BG);
+        char age_buf[8];
+        formatAge(age_buf, sizeof(age_buf), p.stale_seconds);
+        char msg[28];
+        snprintf(msg, sizeof(msg), "no codex use for %s", age_buf);
+        c.drawString(msg, x + 6, footY);
     } else {
-        snprintf(status, sizeof(status), "%lus ago", (unsigned long)(p.stale_seconds));
+        c.setTextColor(UI::COL_OK, UI::COL_BG);
+        c.drawString("live", x + 6, footY);
+        c.fillCircle(x + 6 + 26, footY + 5, 2, UI::COL_OK);
     }
-    c.setFont(&fonts::Font0);
-    c.setTextColor(status_col, UI::COL_BG);
-    c.setTextDatum(top_right);
-    c.drawString(status, x + w - 8, y + h - 12);
+
     c.setTextColor(UI::COL_DIM, UI::COL_BG);
-    c.setTextDatum(top_left);
-    c.drawString("A:refresh", x + 6, y + h - 12);
+    c.setTextDatum(top_right);
+    c.drawString("A:refresh", x + w - 6, footY);
 }

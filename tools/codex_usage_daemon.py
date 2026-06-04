@@ -94,18 +94,14 @@ def fetch_latest_rate_limits() -> dict | None:
     }
 
 
-def _adjust_for_window_resets(data: dict, now_epoch: float) -> dict:
+def _annotate_window_state(data: dict, now_epoch: float) -> dict:
     """
-    Codex only writes `token_count` events when a turn completes. The
-    rate_limits embedded in those events are correct AT THAT MOMENT —
-    but become stale immediately after. If the window's `resets_at`
-    has already passed by the time we read it, the real percent in
-    that window is back to 0 (no new turns since the reset).
-
-    We don't have a live API, but we *can* trust resets_at: if now is
-    past it, the window has rolled over. Set used_percent to 0 in that
-    case and update resets_at by adding window_minutes until it lands
-    in the future.
+    Codex writes `token_count` only when a turn completes, so the
+    embedded rate_limits become a frozen snapshot. We don't fudge the
+    number (that would lie when the user used Codex Desktop/web in the
+    meantime); we just annotate whether the recorded window has since
+    rolled over, and advance resets_at to the next true wall-clock
+    reset so countdown UIs make sense.
     """
     if not data:
         return data
@@ -118,17 +114,15 @@ def _adjust_for_window_resets(data: dict, now_epoch: float) -> dict:
         window_min = rl.get("window_minutes")
         if not resets_at or not window_min:
             continue
-        if now_epoch >= resets_at:
-            # Roll resets_at forward by window_minutes until it's in future
-            window_s = window_min * 60
+        window_s = window_min * 60
+        rolled = now_epoch >= resets_at
+        if rolled:
+            # Roll resets_at forward until it's in the future
             new_resets = resets_at
             while new_resets <= now_epoch:
                 new_resets += window_s
             rl["resets_at"] = new_resets
-            rl["used_percent"] = 0.0
-            rl["adjusted_for_rollover"] = True
-        else:
-            rl["adjusted_for_rollover"] = False
+        rl["window_already_reset"] = rolled
     return data
 
 
@@ -136,7 +130,7 @@ def cached_payload() -> dict:
     now = time.time()
     if _cache["value"] is None or (now - _cache["fetched_at"]) > _CACHE_TTL:
         raw = fetch_latest_rate_limits()
-        _cache["value"] = _adjust_for_window_resets(raw, now)
+        _cache["value"] = _annotate_window_state(raw, now)
         _cache["fetched_at"] = now
 
     data = _cache["value"]
