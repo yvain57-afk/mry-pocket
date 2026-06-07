@@ -154,6 +154,59 @@ def cached_payload() -> dict:
     }
 
 
+# ─────────────────── Pomodoro counter store ───────────────────
+# Tiny persistent daily-count store. StickS3 POSTs +1 on each completed
+# pomodoro; the watch (or anything) GETs today's count + this week's total.
+# Persisted to a JSON file so it survives daemon restarts.
+
+POMODORO_FILE = Path.home() / ".local" / "share" / "mry-pocket" / "pomodoro.json"
+
+
+def _load_pomodoro() -> dict:
+    try:
+        return json.loads(POMODORO_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}   # { "YYYY-MM-DD": count, ... }
+
+
+def _save_pomodoro(store: dict) -> None:
+    try:
+        POMODORO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        POMODORO_FILE.write_text(json.dumps(store))
+    except OSError:
+        pass
+
+
+def _today_key() -> str:
+    # Local date (Asia/Shanghai) — daemon runs on user's Mac so localtime is fine
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def pomodoro_bump(n: int = 1) -> dict:
+    store = _load_pomodoro()
+    k = _today_key()
+    store[k] = int(store.get(k, 0)) + n
+    _save_pomodoro(store)
+    return pomodoro_status()
+
+
+def pomodoro_status() -> dict:
+    store = _load_pomodoro()
+    today = _today_key()
+    today_count = int(store.get(today, 0))
+    # Week-to-date: sum last 7 calendar days
+    now = datetime.now()
+    week_total = 0
+    for i in range(7):
+        d = (now - __import__("datetime").timedelta(days=i)).strftime("%Y-%m-%d")
+        week_total += int(store.get(d, 0))
+    return {
+        "today": today_count,
+        "week": week_total,
+        "date": today,
+    }
+
+
 # ─────────────────── HTTP layer ───────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -172,6 +225,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"status": "ok"})
         elif self.path in ("/codex/usage", "/usage"):
             self._send_json(200, cached_payload())
+        elif self.path == "/pomodoro":
+            self._send_json(200, pomodoro_status())
+        else:
+            self._send_json(404, {"error": "not found", "path": self.path})
+
+    def do_POST(self):  # noqa: N802
+        if self.path in ("/pomodoro", "/pomodoro/bump"):
+            # Optional JSON body {"n": N}; default +1
+            n = 1
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if length:
+                    body = json.loads(self.rfile.read(length))
+                    n = int(body.get("n", 1))
+            except (ValueError, json.JSONDecodeError):
+                n = 1
+            self._send_json(200, pomodoro_bump(n))
         else:
             self._send_json(404, {"error": "not found", "path": self.path})
 
@@ -183,8 +253,10 @@ class Handler(BaseHTTPRequestHandler):
 def serve(host: str, port: int) -> None:
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"codex-usage-daemon listening on http://{host}:{port}", flush=True)
-    print(f"  /codex/usage   latest rate_limits", flush=True)
-    print(f"  /health        liveness", flush=True)
+    print(f"  GET  /codex/usage   latest rate_limits", flush=True)
+    print(f"  GET  /pomodoro      today + week pomodoro count", flush=True)
+    print(f"  POST /pomodoro      bump count (+1, or {{\"n\":N}})", flush=True)
+    print(f"  GET  /health        liveness", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
